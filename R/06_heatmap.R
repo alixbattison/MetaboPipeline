@@ -20,14 +20,19 @@ run_heatmap <- function(data_obj, diff_results, config, organ_dir, mapping_tbl =
   }
 
   # ── Class A: top significant features across all pairwise comparisons
+  # Use adj_p threshold only (consistent with volcano plot colouring)
   all_sig <- purrr::map_dfr(diff_results$pairwise, function(df) {
-    df %>% filter(significant) %>% select(feature, log2FC, adj_p)
+    df %>%
+      filter(adj_p < config$fdr_threshold) %>%
+      select(feature, log2FC, adj_p)
   }) %>%
     group_by(feature) %>%
     summarise(min_adj_p = min(adj_p), .groups = "drop") %>%
     arrange(min_adj_p) %>%
     slice_head(n = config$heatmap_top_n) %>%
-    pull(feature)
+    pull(feature) %>%
+    # Guard against features not present in the intensity matrix
+    intersect(rownames(data_obj$intensity))
 
   if (length(all_sig) >= 2) {
     draw_quantitative_heatmap(

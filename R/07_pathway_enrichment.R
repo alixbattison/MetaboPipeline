@@ -113,7 +113,7 @@ run_kegg_ora <- function(sig_mapped, bg_mapped, config, out_dir, organ_name) {
   kegg_sig <- sig_mapped %>% filter(!is.na(kegg_id)) %>% pull(kegg_id)
   kegg_bg  <- bg_mapped  %>% filter(!is.na(kegg_id)) %>% pull(kegg_id)
 
-  if (length(kegg_sig) < 3) {
+  if (length(kegg_sig) < 1) {
     log_warn("Fewer than 3 KEGG-mapped significant features — skipping KEGG ORA.")
     return(NULL)
   }
@@ -185,7 +185,7 @@ run_reactome_ora <- function(sig_mapped, bg_mapped, config, out_dir, organ_name)
   entrez_sig <- kegg_to_entrez(kegg_sig)
   entrez_bg  <- kegg_to_entrez(kegg_bg)
 
-  if (length(entrez_sig) < 3) {
+  if (length(entrez_sig) < 1) {
     log_warn("Fewer than 3 Entrez-mapped features — skipping Reactome ORA.")
     return(NULL)
   }
@@ -233,7 +233,7 @@ run_wikipathways_ora <- function(sig_mapped, bg_mapped, config, out_dir, organ_n
   entrez_sig <- kegg_to_entrez(kegg_sig)
   entrez_bg  <- kegg_to_entrez(kegg_bg)
 
-  if (length(entrez_sig) < 3) {
+  if (length(entrez_sig) < 1) {
     log_warn("Fewer than 3 Entrez-mapped features — skipping WikiPathways ORA.")
     return(NULL)
   }
@@ -289,7 +289,7 @@ run_hmdb_ora <- function(sig_mapped, bg_mapped, config, out_dir, organ_name) {
   hmdb_sig <- sig_mapped %>% filter(!is.na(hmdb_id)) %>% pull(hmdb_id)
   hmdb_bg  <- bg_mapped  %>% filter(!is.na(hmdb_id)) %>% pull(hmdb_id)
 
-  if (length(hmdb_sig) < 3) {
+  if (length(hmdb_sig) < 1) {
     log_warn("Fewer than 3 HMDB-mapped features — skipping HMDB pathway ORA.")
     return(NULL)
   }
@@ -399,7 +399,7 @@ run_mummichog <- function(sig_mz_df, bg_mz_df, config, out_dir, organ_name) {
   sig_compounds <- unique(unlist(sig_hits))
   bg_compounds  <- unique(unlist(bg_hits))
 
-  if (length(sig_compounds) < 3) {
+  if (length(sig_compounds) < 1) {
     log_warn("Fewer than 3 m/z-matched compounds — skipping mummichog.")
     return(NULL)
   }
