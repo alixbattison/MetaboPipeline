@@ -7,7 +7,22 @@
 # Optionally supply an m/z + RT file per organ (see mz_rt_files map below).
 # Results are written to 'results/{organ_name}/'.
 
+# ── Locate the pipeline root reliably in both RStudio and Rscript ─────────────
+if (requireNamespace("rstudioapi", quietly = TRUE) &&
+    rstudioapi::isAvailable() &&
+    nzchar(rstudioapi::getActiveDocumentContext()$path)) {
+  .pipeline_root <- dirname(rstudioapi::getActiveDocumentContext()$path)
+} else {
+  .pipeline_root <- tryCatch(
+    dirname(normalizePath(sys.frame(0)$ofile)),
+    error = function(e) getwd()
+  )
+}
+setwd(.pipeline_root)
+message("Pipeline root: ", .pipeline_root)
+
 suppressPackageStartupMessages(library(here))
+here::i_am("run_pipeline.R")   # anchors here() to this file's directory
 
 # ── Load configuration and all modules ───────────────────────────────────────
 source(here("config.R"))
