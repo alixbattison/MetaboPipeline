@@ -265,9 +265,12 @@ plot_volcano <- function(results, config, comparison_label, mapping_tbl = NULL) 
   df <- df %>%
     mutate(
       neg_log10_p = -log10(pmax(p_value, 1e-300)),
+      # Colour based on p-value threshold only — fold-change lines are shown
+      # as reference but do not gate the colour or labels
+      sig_by_p = adj_p < config$fdr_threshold,
       colour_group = case_when(
-        significant & log2FC > 0 ~ "Up",
-        significant & log2FC < 0 ~ "Down",
+        sig_by_p & log2FC > 0 ~ "Up",
+        sig_by_p & log2FC < 0 ~ "Down",
         TRUE ~ "NS"
       )
     )
@@ -276,8 +279,8 @@ plot_volcano <- function(results, config, comparison_label, mapping_tbl = NULL) 
   size_map   <- c(Up = 2.2, Down = 2.2, NS = 1.4)
   alpha_map  <- c(Up = 0.9, Down = 0.9, NS = 0.4)
 
-  # Label ALL significant features; fall back to compound name then feature ID
-  label_df <- df %>% filter(significant)
+  # Label ALL features that pass the p-value threshold
+  label_df <- df %>% filter(sig_by_p)
 
   ggplot(df, aes(x = log2FC, y = neg_log10_p, colour = colour_group,
                  size = colour_group, alpha = colour_group)) +
