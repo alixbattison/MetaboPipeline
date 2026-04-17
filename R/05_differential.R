@@ -264,10 +264,10 @@ plot_volcano <- function(results, config, comparison_label, mapping_tbl = NULL) 
 
   df <- df %>%
     mutate(
-      neg_log10_p = -log10(pmax(p_value, 1e-300)),
-      # Colour based on p-value threshold only — fold-change lines are shown
-      # as reference but do not gate the colour or labels
-      sig_by_p = adj_p < config$fdr_threshold,
+      # Use adjusted p-value on y-axis so the threshold line perfectly
+      # separates coloured from grey dots
+      neg_log10_p  = -log10(pmax(adj_p, 1e-300)),
+      sig_by_p     = adj_p < config$fdr_threshold,
       colour_group = case_when(
         sig_by_p & log2FC > 0 ~ "Up",
         sig_by_p & log2FC < 0 ~ "Down",
@@ -314,7 +314,7 @@ plot_volcano <- function(results, config, comparison_label, mapping_tbl = NULL) 
                         "  |  |log2FC| \u2265 ", config$fc_threshold,
                         "  |  Red = up, Blue = down"),
       x        = "log2 Fold Change",
-      y        = expression(-log[10](p-value)),
+      y        = expression(-log[10](adjusted~p-value)),
       colour   = NULL
     ) +
     theme_metabo()
