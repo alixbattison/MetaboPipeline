@@ -312,31 +312,26 @@ map_via_pubchem <- function(compound_names, cache_dir) {
 }
 
 pubchem_names_to_cids <- function(names) {
-  body_str <- paste(paste0("name=", utils::URLencode(names, repeated = TRUE)),
-                    collapse = "&")
-  resp <- tryCatch(
-    httr::POST(
-      "https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/cids/JSON",
-      body    = body_str,
-      encode  = "raw",
-      httr::content_type("application/x-www-form-urlencoded"),
-      httr::timeout(30)
-    ),
-    error = function(e) NULL
-  )
-  if (is.null(resp) || httr::status_code(resp) != 200) {
-    return(setNames(rep(list(NA), length(names)), names))
+  # Individual GET per compound — batch POST is unreliable when some names
+  # are not found (PubChem returns fewer CIDs than names with no correspondence).
+  result <- vector("list", length(names))
+  names(result) <- names
+  for (i in seq_along(names)) {
+    encoded <- utils::URLencode(names[i], repeated = TRUE)
+    url  <- paste0("https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/",
+                   encoded, "/cids/JSON")
+    resp <- tryCatch(httr::GET(url, httr::timeout(12)), error = function(e) NULL)
+    if (!is.null(resp) && httr::status_code(resp) == 200) {
+      parsed <- tryCatch(
+        jsonlite::fromJSON(httr::content(resp, "text", encoding = "UTF-8")),
+        error = function(e) NULL
+      )
+      if (!is.null(parsed$IdentifierList$CID))
+        result[[names[i]]] <- parsed$IdentifierList$CID[1]
+    }
+    Sys.sleep(0.12)
   }
-  parsed <- tryCatch(
-    jsonlite::fromJSON(httr::content(resp, "text", encoding = "UTF-8")),
-    error = function(e) NULL
-  )
-  if (is.null(parsed)) return(setNames(rep(list(NA), length(names)), names))
-
-  # Response: IdentifierList$CID (one CID per name, in order submitted)
-  cids <- parsed$IdentifierList$CID
-  if (is.null(cids)) return(setNames(rep(list(NA), length(names)), names))
-  setNames(as.list(cids), names)
+  result
 }
 
 pubchem_cid_to_ids <- function(name, cid) {

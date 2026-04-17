@@ -105,10 +105,17 @@ run_single_file <- function(file_path) {
     run_id_mapping(data_obj, config, organ_dir, mz_rt_df = mz_rt_df),
     error = function(e) {
       log_warn("ID mapping failed: ", e$message, " — continuing without mapping.")
-      tibble::tibble(feature = data_obj$feature_ids,
-                     compound_name = NA_character_,
-                     hmdb_id = NA_character_, kegg_id = NA_character_,
-                     mapping_method = "none", confidence = "none")
+      tibble::tibble(feature        = data_obj$feature_ids,
+                     clean_name     = data_obj$feature_ids,
+                     compound_name  = NA_character_,
+                     hmdb_id        = NA_character_,
+                     kegg_id        = NA_character_,
+                     lmid           = NA_character_,
+                     lipid_class    = NA_character_,
+                     lipid_subclass = NA_character_,
+                     inchikey       = NA_character_,
+                     mapping_method = "none",
+                     confidence     = "none")
     }
   )
 

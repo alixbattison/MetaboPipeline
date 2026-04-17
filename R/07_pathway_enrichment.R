@@ -114,7 +114,7 @@ run_kegg_ora <- function(sig_mapped, bg_mapped, config, out_dir, organ_name) {
   kegg_bg  <- bg_mapped  %>% filter(!is.na(kegg_id)) %>% pull(kegg_id)
 
   if (length(kegg_sig) < 1) {
-    log_warn("Fewer than 3 KEGG-mapped significant features — skipping KEGG ORA.")
+    log_warn("Fewer than 1 KEGG-mapped significant features — skipping KEGG ORA.")
     return(NULL)
   }
 
@@ -186,7 +186,7 @@ run_reactome_ora <- function(sig_mapped, bg_mapped, config, out_dir, organ_name)
   entrez_bg  <- kegg_to_entrez(kegg_bg)
 
   if (length(entrez_sig) < 1) {
-    log_warn("Fewer than 3 Entrez-mapped features — skipping Reactome ORA.")
+    log_warn("Fewer than 1 Entrez-mapped features — skipping Reactome ORA.")
     return(NULL)
   }
 
@@ -234,7 +234,7 @@ run_wikipathways_ora <- function(sig_mapped, bg_mapped, config, out_dir, organ_n
   entrez_bg  <- kegg_to_entrez(kegg_bg)
 
   if (length(entrez_sig) < 1) {
-    log_warn("Fewer than 3 Entrez-mapped features — skipping WikiPathways ORA.")
+    log_warn("Fewer than 1 Entrez-mapped features — skipping WikiPathways ORA.")
     return(NULL)
   }
 
@@ -290,7 +290,7 @@ run_hmdb_ora <- function(sig_mapped, bg_mapped, config, out_dir, organ_name) {
   hmdb_bg  <- bg_mapped  %>% filter(!is.na(hmdb_id)) %>% pull(hmdb_id)
 
   if (length(hmdb_sig) < 1) {
-    log_warn("Fewer than 3 HMDB-mapped features — skipping HMDB pathway ORA.")
+    log_warn("Fewer than 1 HMDB-mapped features — skipping HMDB pathway ORA.")
     return(NULL)
   }
 
@@ -422,7 +422,7 @@ run_mummichog <- function(sig_mz_df, bg_mz_df, config, out_dir, organ_name) {
   bg_compounds  <- unique(unlist(bg_hits))
 
   if (length(sig_compounds) < 1) {
-    log_warn("Fewer than 3 m/z-matched compounds — skipping mummichog.")
+    log_warn("Fewer than 1 m/z-matched compounds — skipping mummichog.")
     return(NULL)
   }
 
@@ -602,12 +602,14 @@ plot_cross_db <- function(cross_db, organ_name, top_n = 30) {
 
 run_lipidmaps_enrichment <- function(sig_mapped, bg_mapped, config,
                                       out_dir, organ_name) {
-  # Only features that have a LIPID MAPS ID or at least a lipid class
-  sig_lm <- sig_mapped %>%
-    filter(!is.na(lipid_class) | !is.na(lmid))
+  # Guard: columns may be absent if mapping failed entirely
+  if (!all(c("lipid_class", "lmid") %in% names(sig_mapped))) {
+    log_info("  LIPID MAPS: mapping columns absent — skipping.")
+    return(NULL)
+  }
 
-  bg_lm  <- bg_mapped %>%
-    filter(!is.na(lipid_class) | !is.na(lmid))
+  sig_lm <- sig_mapped %>% filter(!is.na(lipid_class) | !is.na(lmid))
+  bg_lm  <- bg_mapped  %>% filter(!is.na(lipid_class) | !is.na(lmid))
 
   if (nrow(sig_lm) < 3) {
     log_info("  LIPID MAPS: fewer than 3 lipid features mapped — skipping.")
