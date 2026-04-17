@@ -204,7 +204,8 @@ map_via_lipidmaps <- function(lipid_names, cache_dir) {
     if (!is.null(cache[[name]])) return(cache[[name]])
 
     result <- query_lipidmaps(name)
-    cache[[name]] <<- result
+    # Only cache successful hits — failures will be retried next run
+    if (result$confidence != "none") cache[[name]] <<- result
     Sys.sleep(0.1)
     result
   })
@@ -295,10 +296,10 @@ map_via_pubchem <- function(compound_names, cache_dir) {
 
       for (name in batch) {
         cid <- cid_map[[name]]
-        if (is.null(cid) || is.na(cid)) {
-          cache[[name]] <- pubchem_blank(name)
-        } else {
-          cache[[name]] <- pubchem_cid_to_ids(name, cid)
+        if (!is.null(cid) && !is.na(cid)) {
+          result <- pubchem_cid_to_ids(name, cid)
+          # Only cache successful hits — failures will be retried next run
+          if (result$confidence != "none") cache[[name]] <- result
           Sys.sleep(0.15)
         }
       }
