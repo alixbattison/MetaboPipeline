@@ -272,28 +272,44 @@ plot_volcano <- function(results, config, comparison_label, mapping_tbl = NULL) 
       )
     )
 
-  colour_map <- c(Up = "#d73027", Down = "#4575b4", NS = "grey60")
-  label_df   <- df %>% filter(significant) %>% slice_min(p_value, n = 20)
+  colour_map <- c(Up = "#e31a1c", Down = "#1f78b4", NS = "grey75")
+  size_map   <- c(Up = 2.2, Down = 2.2, NS = 1.4)
+  alpha_map  <- c(Up = 0.9, Down = 0.9, NS = 0.4)
 
-  ggplot(df, aes(x = log2FC, y = neg_log10_p, colour = colour_group)) +
-    geom_point(alpha = 0.65, size = 1.8) +
+  # Label ALL significant features; fall back to compound name then feature ID
+  label_df <- df %>% filter(significant)
+
+  ggplot(df, aes(x = log2FC, y = neg_log10_p, colour = colour_group,
+                 size = colour_group, alpha = colour_group)) +
+    geom_point() +
     ggrepel::geom_text_repel(
-      data = label_df, aes(label = label),
-      size = 2.5, max.overlaps = 20,
-      segment.alpha = 0.4, show.legend = FALSE
+      data          = label_df,
+      aes(label     = label),
+      colour        = "black",
+      size          = 2.8,
+      fontface      = "italic",
+      box.padding   = 0.4,
+      point.padding = 0.2,
+      max.overlaps  = Inf,
+      segment.colour = "grey50",
+      segment.alpha = 0.6,
+      show.legend   = FALSE
     ) +
     geom_hline(yintercept = -log10(config$fdr_threshold),
                linetype = "dashed", colour = "grey40", linewidth = 0.5) +
     geom_vline(xintercept = c(-config$fc_threshold, config$fc_threshold),
                linetype = "dashed", colour = "grey40", linewidth = 0.5) +
     scale_colour_manual(values = colour_map,
-                        labels = c(Up = paste0("Up in ", unique(results$group1)),
+                        labels = c(Up   = paste0("Up in ", unique(results$group1)),
                                    Down = paste0("Up in ", unique(results$group2)),
-                                   NS = "Not significant")) +
+                                   NS   = "Not significant")) +
+    scale_size_manual(values  = size_map,  guide = "none") +
+    scale_alpha_manual(values = alpha_map, guide = "none") +
     labs(
       title    = paste("Volcano Plot:", gsub("_", " ", comparison_label)),
       subtitle = paste0("FDR < ", config$fdr_threshold,
-                        "  |  |log2FC| ≥ ", config$fc_threshold),
+                        "  |  |log2FC| \u2265 ", config$fc_threshold,
+                        "  |  Red = up, Blue = down"),
       x        = "log2 Fold Change",
       y        = expression(-log[10](p-value)),
       colour   = NULL
