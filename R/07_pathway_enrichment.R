@@ -67,6 +67,13 @@ run_pathway_enrichment <- function(data_obj, diff_results, config, organ_dir,
   hmdb_res <- run_hmdb_ora(sig_mapped, bg_mapped, config, hmdb_dir, data_obj$organ_name)
   all_results$hmdb <- hmdb_res
 
+  # ── LIPID MAPS enrichment ─────────────────────────────────────────────────
+  lm_dir <- file.path(pe_dir, "lipidmaps")
+  dir.create(lm_dir, showWarnings = FALSE)
+  lm_res <- run_lipidmaps_enrichment(sig_mapped, bg_mapped, config, lm_dir,
+                                      data_obj$organ_name)
+  all_results$lipidmaps <- lm_res
+
   # ── mummichog-style m/z enrichment (if m/z provided) ─────────────────────
   if (!is.null(mz_rt_df)) {
     mz_dir <- file.path(pe_dir, "mummichog")
@@ -563,6 +570,162 @@ plot_cross_db <- function(cross_db, organ_name, top_n = 30) {
                         name = expression(-log[10](best~FDR))) +
     labs(title = paste("Cross-database pathway overlap —", organ_name),
          x = NULL, y = "Number of databases with enrichment") +
+    theme_metabo()
+}
+
+# ── LIPID MAPS enrichment ─────────────────────────────────────────────────────
+# Two-level enrichment:
+#   1. Lipid class level  (e.g. Glycerophospholipids vs Sphingolipids)
+#   2. Lipid sub-class level (e.g. Phosphatidylcholines vs Lysophosphatidylcholines)
+
+run_lipidmaps_enrichment <- function(sig_mapped, bg_mapped, config,
+                                      out_dir, organ_name) {
+  # Only features that have a LIPID MAPS ID or at least a lipid class
+  sig_lm <- sig_mapped %>%
+    filter(!is.na(lipid_class) | !is.na(lmid))
+
+  bg_lm  <- bg_mapped %>%
+    filter(!is.na(lipid_class) | !is.na(lmid))
+
+  if (nrow(sig_lm) < 3) {
+    log_info("  LIPID MAPS: fewer than 3 lipid features mapped — skipping.")
+    return(NULL)
+  }
+
+  log_info("  LIPID MAPS: ", nrow(sig_lm), " significant lipid features, ",
+           nrow(bg_lm), " background lipid features")
+
+  results <- list()
+
+  # ── Class-level ORA ───────────────────────────────────────────────────────
+  class_res <- lipidmaps_ora(
+    sig_classes = sig_lm$lipid_class,
+    bg_classes  = bg_lm$lipid_class,
+    level_name  = "Lipid class",
+    n_sig_total = nrow(sig_mapped),
+    n_bg_total  = nrow(bg_mapped)
+  )
+  if (!is.null(class_res) && nrow(class_res) > 0) {
+    utils::write.csv(class_res,
+                     file.path(out_dir, "lipidmaps_class_ora.csv"),
+                     row.names = FALSE)
+    p_class <- plot_lipidmaps(class_res,
+                               paste("LIPID MAPS class —", organ_name))
+    save_plot(p_class, file.path(out_dir, "lipidmaps_class_dotplot.pdf"),
+              width = 10, height = 6)
+    results$class <- class_res
+  }
+
+  # ── Sub-class-level ORA ───────────────────────────────────────────────────
+  sub_res <- lipidmaps_ora(
+    sig_classes = sig_lm$lipid_subclass,
+    bg_classes  = bg_lm$lipid_subclass,
+    level_name  = "Lipid sub-class",
+    n_sig_total = nrow(sig_mapped),
+    n_bg_total  = nrow(bg_mapped)
+  )
+  if (!is.null(sub_res) && nrow(sub_res) > 0) {
+    utils::write.csv(sub_res,
+                     file.path(out_dir, "lipidmaps_subclass_ora.csv"),
+                     row.names = FALSE)
+    p_sub <- plot_lipidmaps(sub_res,
+                             paste("LIPID MAPS sub-class —", organ_name))
+    save_plot(p_sub, file.path(out_dir, "lipidmaps_subclass_dotplot.pdf"),
+              width = 10, height = 7)
+    results$subclass <- sub_res
+  }
+
+  # ── Lipid class composition bar chart ─────────────────────────────────────
+  if (nrow(sig_lm) > 0 && any(!is.na(sig_lm$lipid_class))) {
+    p_comp <- plot_lipid_composition(sig_lm, bg_lm, organ_name)
+    save_plot(p_comp, file.path(out_dir, "lipid_class_composition.pdf"),
+              width = 10, height = 6)
+  }
+
+  if (length(results) == 0) return(NULL)
+
+  combined <- purrr::map_dfr(results, function(df) {
+    df %>% mutate(database = "LIPID MAPS",
+                  Description = category,
+                  p.adjust    = fdr,
+                  Count       = n_sig)
+  })
+  invisible(combined)
+}
+
+lipidmaps_ora <- function(sig_classes, bg_classes, level_name,
+                           n_sig_total, n_bg_total) {
+  sig_classes <- na.omit(sig_classes)
+  bg_classes  <- na.omit(bg_classes)
+  if (length(sig_classes) < 2) return(NULL)
+
+  all_cats <- unique(c(sig_classes, bg_classes))
+
+  res <- purrr::map_dfr(all_cats, function(cat) {
+    in_sig_in   <- sum(sig_classes == cat)
+    if (in_sig_in == 0) return(NULL)
+    in_sig_out  <- length(sig_classes) - in_sig_in
+    out_sig_in  <- sum(bg_classes[!bg_classes %in% sig_classes] == cat)
+    out_sig_out <- length(bg_classes) - length(sig_classes) - out_sig_in
+    ct   <- matrix(c(in_sig_in, in_sig_out, out_sig_in, out_sig_out), nrow = 2)
+    pval <- tryCatch(fisher.test(ct, alternative = "greater")$p.value,
+                     error = function(e) NA_real_)
+    tibble(
+      category   = cat,
+      level      = level_name,
+      n_sig      = in_sig_in,
+      n_bg       = sum(bg_classes == cat),
+      pct_sig    = round(100 * in_sig_in / n_sig_total, 1),
+      p_value    = pval
+    )
+  }) %>%
+    filter(!is.na(p_value)) %>%
+    mutate(fdr = p.adjust(p_value, method = "BH")) %>%
+    filter(fdr < 0.05) %>%
+    arrange(fdr)
+
+  if (nrow(res) == 0) return(NULL)
+  res
+}
+
+plot_lipidmaps <- function(res, title) {
+  plot_df <- res %>%
+    mutate(
+      category     = stringr::str_wrap(category, 35),
+      category     = factor(category, levels = rev(category)),
+      neg_log10_fdr = -log10(fdr)
+    )
+
+  ggplot(plot_df, aes(x = neg_log10_fdr, y = category,
+                      size = n_sig, colour = neg_log10_fdr)) +
+    geom_point() +
+    scale_colour_gradient(low = "#fee08b", high = "#d73027",
+                          name = expression(-log[10](FDR))) +
+    scale_size_continuous(name = "Significant\nfeatures", range = c(3, 9)) +
+    labs(title = title,
+         x     = expression(-log[10](adjusted~p-value)),
+         y     = NULL) +
+    theme_metabo() +
+    theme(axis.text.y = element_text(size = 9))
+}
+
+plot_lipid_composition <- function(sig_lm, bg_lm, organ_name) {
+  comp <- bind_rows(
+    sig_lm %>% filter(!is.na(lipid_class)) %>%
+      count(lipid_class) %>% mutate(group = "Significant"),
+    bg_lm %>% filter(!is.na(lipid_class)) %>%
+      count(lipid_class) %>% mutate(group = "Background")
+  ) %>%
+    group_by(group) %>%
+    mutate(prop = n / sum(n)) %>%
+    ungroup()
+
+  ggplot(comp, aes(x = group, y = prop, fill = lipid_class)) +
+    geom_col(position = "stack", colour = "white", linewidth = 0.3) +
+    scale_y_continuous(labels = scales::percent) +
+    scale_fill_brewer(palette = "Set3", name = "Lipid class") +
+    labs(title = paste("Lipid class composition —", organ_name),
+         x = NULL, y = "Proportion of features") +
     theme_metabo()
 }
 
