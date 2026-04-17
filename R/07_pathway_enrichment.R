@@ -340,24 +340,46 @@ run_hmdb_ora <- function(sig_mapped, bg_mapped, config, out_dir, organ_name) {
 }
 
 fetch_hmdb_pathways <- function(hmdb_ids) {
-  # Query HMDB REST API for pathway associations of a set of HMDB IDs
-  results <- purrr::map_dfr(head(hmdb_ids, 200), function(hid) {
-    url  <- paste0("https://hmdb.ca/metabolites/", hid, ".json")
-    resp <- tryCatch(httr::GET(url, httr::timeout(8)), error = function(e) NULL)
-    if (is.null(resp) || httr::status_code(resp) != 200) return(NULL)
-    parsed <- tryCatch(
-      jsonlite::fromJSON(httr::content(resp, "text", encoding = "UTF-8"),
-                         simplifyVector = FALSE),
-      error = function(e) NULL
-    )
-    if (is.null(parsed)) return(NULL)
-    pathways <- parsed$pathways
-    if (is.null(pathways) || length(pathways) == 0) return(NULL)
-    purrr::map_dfr(pathways, function(pw) {
-      tibble(hmdb_id = hid, pathway_name = pw$name %||% NA_character_)
-    })
-  })
-  results
+  # Query HMDB REST API for pathway associations — no cap, all mapped IDs used.
+  # Results are cached to avoid re-querying on subsequent runs.
+  cache_file <- here::here("data", ".mapping_cache", "hmdb_pathways_cache.rds")
+  dir.create(dirname(cache_file), recursive = TRUE, showWarnings = FALSE)
+  cache <- if (file.exists(cache_file)) readRDS(cache_file) else list()
+
+  unique_ids  <- unique(na.omit(hmdb_ids))
+  uncached    <- unique_ids[!unique_ids %in% names(cache)]
+
+  if (length(uncached) > 0) {
+    log_info("    Fetching HMDB pathways for ", length(uncached), " compounds ...")
+    for (i in seq_along(uncached)) {
+      hid  <- uncached[i]
+      if (i %% 50 == 0)
+        log_info("    HMDB pathway progress: ", i, "/", length(uncached))
+      url  <- paste0("https://hmdb.ca/metabolites/", hid, ".json")
+      resp <- tryCatch(httr::GET(url, httr::timeout(10)), error = function(e) NULL)
+      if (is.null(resp) || httr::status_code(resp) != 200) {
+        cache[[hid]] <- tibble(hmdb_id = hid, pathway_name = character(0))
+        next
+      }
+      parsed <- tryCatch(
+        jsonlite::fromJSON(httr::content(resp, "text", encoding = "UTF-8"),
+                           simplifyVector = FALSE),
+        error = function(e) NULL
+      )
+      pathways <- if (!is.null(parsed)) parsed$pathways else NULL
+      if (is.null(pathways) || length(pathways) == 0) {
+        cache[[hid]] <- tibble(hmdb_id = hid, pathway_name = character(0))
+      } else {
+        cache[[hid]] <- purrr::map_dfr(pathways, function(pw) {
+          tibble(hmdb_id = hid, pathway_name = pw$name %||% NA_character_)
+        })
+      }
+      Sys.sleep(0.1)
+    }
+    saveRDS(cache, cache_file)
+  }
+
+  purrr::map_dfr(unique_ids, function(hid) cache[[hid]])
 }
 
 # ── mummichog-style m/z enrichment ───────────────────────────────────────────

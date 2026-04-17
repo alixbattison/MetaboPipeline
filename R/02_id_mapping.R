@@ -7,6 +7,28 @@ suppressPackageStartupMessages({
   library(purrr)
 })
 
+# Bump this string any time the mapping logic changes — old caches are
+# automatically discarded and rebuilt from the APIs.
+.CACHE_VERSION <- "v3"
+
+# ── Cache helpers ─────────────────────────────────────────────────────────────
+
+load_cache <- function(cache_file) {
+  if (!file.exists(cache_file)) return(list())
+  cache <- tryCatch(readRDS(cache_file), error = function(e) list())
+  # Discard if version doesn't match
+  if (!identical(cache[["__version__"]], .CACHE_VERSION)) {
+    log_info("  Cache version mismatch — rebuilding: ", basename(cache_file))
+    return(list())
+  }
+  cache
+}
+
+save_cache <- function(cache, cache_file) {
+  cache[["__version__"]] <- .CACHE_VERSION
+  saveRDS(cache, cache_file)
+}
+
 # ── Main mapping entry point ──────────────────────────────────────────────────
 
 run_id_mapping <- function(data_obj, config, organ_dir, mz_rt_df = NULL) {
@@ -171,7 +193,7 @@ detect_lipid_names <- function(names) {
 
 map_via_lipidmaps <- function(lipid_names, cache_dir) {
   cache_file <- file.path(cache_dir, "lipidmaps_cache.rds")
-  cache      <- if (file.exists(cache_file)) readRDS(cache_file) else list()
+  cache      <- load_cache(cache_file)
 
   results <- map_dfr(seq_along(lipid_names), function(i) {
     name <- lipid_names[i]
@@ -187,7 +209,7 @@ map_via_lipidmaps <- function(lipid_names, cache_dir) {
     result
   })
 
-  saveRDS(cache, cache_file)
+  save_cache(cache, cache_file)
   results
 }
 
@@ -258,7 +280,7 @@ query_lipidmaps <- function(name) {
 
 map_via_pubchem <- function(compound_names, cache_dir) {
   cache_file <- file.path(cache_dir, "pubchem_cache.rds")
-  cache      <- if (file.exists(cache_file)) readRDS(cache_file) else list()
+  cache      <- load_cache(cache_file)
 
   uncached <- compound_names[!compound_names %in% names(cache)]
 
@@ -282,7 +304,7 @@ map_via_pubchem <- function(compound_names, cache_dir) {
       }
       Sys.sleep(0.5)
     }
-    saveRDS(cache, cache_file)
+    save_cache(cache, cache_file)
   }
 
   map_dfr(compound_names, function(n) cache[[n]] %||% pubchem_blank(n))
