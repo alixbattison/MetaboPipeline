@@ -348,7 +348,9 @@ pubchem_cid_to_ids <- function(name, cid) {
   )
   if (is.null(parsed)) return(blank)
 
-  syns <- parsed$InformationList$Information[[1]]$Synonym
+  info <- parsed$InformationList$Information
+  # fromJSON may simplify to a data frame (columns) or keep as list (rows)
+  syns <- if (is.data.frame(info)) info$Synonym[[1]] else info[[1]]$Synonym
   if (is.null(syns)) return(blank)
 
   # Extract HMDB ID (format: HMDB0000001 or HMDB00001)
