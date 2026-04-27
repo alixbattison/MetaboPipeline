@@ -9,7 +9,7 @@ suppressPackageStartupMessages({
 
 # Bump this string any time the mapping logic changes — old caches are
 # automatically discarded and rebuilt from the APIs.
-.CACHE_VERSION <- "v3"
+.CACHE_VERSION <- "v4"
 
 # ── Cache helpers ─────────────────────────────────────────────────────────────
 
@@ -123,6 +123,26 @@ run_id_mapping <- function(data_obj, config, organ_dir, mz_rt_df = NULL) {
         }
       }
     }
+
+    # Strategy 1d: KEGG direct name search for named features still lacking KEGG ID
+    kegg_needed <- results %>%
+      filter(clean_name %in% named_clean, is.na(kegg_id)) %>%
+      pull(clean_name)
+    if (length(kegg_needed) > 0) {
+      log_info("  Strategy 1d: KEGG name search (", length(kegg_needed), " features)")
+      kegg_map <- map_via_kegg_names(kegg_needed, cache_dir)
+      for (i in seq_len(nrow(kegg_map))) {
+        ri <- match(kegg_map$feature[i], results$clean_name)
+        if (!is.na(ri) && !is.na(kegg_map$kegg_id[i])) {
+          results$kegg_id[ri] <- kegg_map$kegg_id[i]
+          if (is.na(results$mapping_method[ri]) ||
+              results$mapping_method[ri] == "none") {
+            results$mapping_method[ri] <- "kegg_name"
+            results$confidence[ri]     <- "medium"
+          }
+        }
+      }
+    }
   }
 
   # Strategy 2: m/z-based mapping for anything still unmapped
@@ -223,57 +243,99 @@ query_lipidmaps <- function(name) {
     mapping_method = "none", confidence = "none"
   )
 
+  # Encode all special characters including parentheses (required for lipid names)
   encoded <- utils::URLencode(name, repeated = TRUE)
-  url     <- paste0("https://www.lipidmaps.org/rest/compound/name/",
-                    encoded, "/all/json")
+  encoded <- gsub("(", "%28", encoded, fixed = TRUE)
+  encoded <- gsub(")", "%29", encoded, fixed = TRUE)
 
-  resp <- tryCatch(
-    httr::GET(url, httr::timeout(15)),
-    error = function(e) NULL
+  # Try /abbrev/ first (designed for lipid shorthand like PC(16:0/18:1)),
+  # then /name/ as fallback
+  urls <- c(
+    paste0("https://www.lipidmaps.org/rest/compound/abbrev/", encoded, "/all/json"),
+    paste0("https://www.lipidmaps.org/rest/compound/name/",   encoded, "/all/json")
   )
-  if (is.null(resp) || httr::status_code(resp) != 200) return(blank)
 
-  parsed <- tryCatch(
-    jsonlite::fromJSON(httr::content(resp, "text", encoding = "UTF-8"),
-                       simplifyVector = TRUE),
-    error = function(e) NULL
-  )
-  if (is.null(parsed) || length(parsed) == 0 ||
-      (is.data.frame(parsed) && nrow(parsed) == 0)) return(blank)
+  for (url in urls) {
+    resp <- tryCatch(httr::GET(url, httr::timeout(15)), error = function(e) NULL)
+    if (is.null(resp) || httr::status_code(resp) != 200) next
 
-  # fromJSON may return a list or data frame depending on result count
-  if (is.data.frame(parsed)) {
-    hit <- parsed[1, ]
-  } else {
-    hit <- as.data.frame(as.list(parsed), stringsAsFactors = FALSE)
+    parsed <- tryCatch(
+      jsonlite::fromJSON(httr::content(resp, "text", encoding = "UTF-8"),
+                         simplifyVector = TRUE),
+      error = function(e) NULL
+    )
+    if (is.null(parsed) || length(parsed) == 0 ||
+        (is.data.frame(parsed) && nrow(parsed) == 0)) next
+
+    if (is.data.frame(parsed)) {
+      hit <- parsed[1, ]
+    } else {
+      hit <- as.data.frame(as.list(parsed), stringsAsFactors = FALSE)
+    }
+
+    lmid    <- hit$lm_id    %||% NA_character_
+    kegg_id <- hit$kegg_id  %||% NA_character_
+    hmdb_id <- hit$hmdb_id  %||% NA_character_
+    cname   <- hit$name     %||% name
+    mclass  <- hit$main_class %||% NA_character_
+    sclass  <- hit$sub_class  %||% NA_character_
+
+    if (!is.na(hmdb_id) && nzchar(hmdb_id) && !grepl("^HMDB", hmdb_id))
+      hmdb_id <- paste0("HMDB", str_pad(hmdb_id, 7, pad = "0"))
+
+    has_id <- (!is.na(lmid) & nzchar(lmid)) |
+              (!is.na(kegg_id) & nzchar(kegg_id)) |
+              (!is.na(hmdb_id) & nzchar(hmdb_id))
+
+    if (has_id) {
+      return(tibble(
+        feature        = name,
+        compound_name  = if_else(nzchar(cname %||% ""), cname, name),
+        hmdb_id        = if_else(nzchar(hmdb_id %||% ""), hmdb_id, NA_character_),
+        kegg_id        = if_else(nzchar(kegg_id %||% ""), kegg_id, NA_character_),
+        lmid           = if_else(nzchar(lmid %||% ""), lmid, NA_character_),
+        lipid_class    = mclass,
+        lipid_subclass = sclass,
+        mapping_method = "lipidmaps",
+        confidence     = "high"
+      ))
+    }
   }
+  blank
+}
 
-  lmid    <- hit$lm_id    %||% NA_character_
-  kegg_id <- hit$kegg_id  %||% NA_character_
-  hmdb_id <- hit$hmdb_id  %||% NA_character_
-  cname   <- hit$name     %||% name
-  mclass  <- hit$main_class %||% NA_character_
-  sclass  <- hit$sub_class  %||% NA_character_
+# ── Strategy 1b-extra: KEGG compound name search ─────────────────────────────
+# Direct KEGG name lookup — supplements PubChem for common metabolites.
+# Called after PubChem for features still lacking a KEGG ID.
 
-  # Normalise HMDB ID format
-  if (!is.na(hmdb_id) && nzchar(hmdb_id) && !grepl("^HMDB", hmdb_id))
-    hmdb_id <- paste0("HMDB", str_pad(hmdb_id, 7, pad = "0"))
+map_via_kegg_names <- function(compound_names, cache_dir) {
+  cache_file <- file.path(cache_dir, "kegg_names_cache.rds")
+  cache      <- load_cache(cache_file)
 
-  has_id <- (!is.na(lmid) & nzchar(lmid)) |
-            (!is.na(kegg_id) & nzchar(kegg_id)) |
-            (!is.na(hmdb_id) & nzchar(hmdb_id))
+  results <- map_dfr(compound_names, function(name) {
+    if (!is.null(cache[[name]])) return(cache[[name]])
+    kegg_id <- kegg_name_search(name)
+    row     <- tibble(feature = name, kegg_id = kegg_id)
+    if (!is.na(kegg_id)) cache[[name]] <<- row
+    Sys.sleep(0.2)
+    row
+  })
 
-  tibble(
-    feature        = name,
-    compound_name  = if_else(nzchar(cname %||% ""), cname, name),
-    hmdb_id        = if_else(nzchar(hmdb_id %||% ""), hmdb_id, NA_character_),
-    kegg_id        = if_else(nzchar(kegg_id %||% ""), kegg_id, NA_character_),
-    lmid           = if_else(nzchar(lmid %||% ""), lmid, NA_character_),
-    lipid_class    = mclass,
-    lipid_subclass = sclass,
-    mapping_method = if_else(has_id, "lipidmaps", "none"),
-    confidence     = if_else(has_id, "high", "none")
-  )
+  save_cache(cache, cache_file)
+  results
+}
+
+kegg_name_search <- function(name) {
+  encoded <- utils::URLencode(name, repeated = TRUE)
+  url     <- paste0("https://rest.kegg.jp/find/compound/", encoded)
+  resp    <- tryCatch(httr::GET(url, httr::timeout(10)), error = function(e) NULL)
+  if (is.null(resp) || httr::status_code(resp) != 200) return(NA_character_)
+  txt <- httr::content(resp, "text", encoding = "UTF-8")
+  if (!nzchar(trimws(txt))) return(NA_character_)
+  # Response: "cpd:C00031\tD-Glucose, ...\n..."
+  first_line <- strsplit(txt, "\n")[[1]][1]
+  first_col  <- strsplit(first_line, "\t")[[1]][1]
+  gsub("^cpd:", "", first_col)
 }
 
 # ── Strategy 1b: PubChem API ─────────────────────────────────────────────────
@@ -353,9 +415,31 @@ pubchem_cid_to_ids <- function(name, cid) {
   syns <- if (is.data.frame(info)) info$Synonym[[1]] else info[[1]]$Synonym
   if (is.null(syns)) return(blank)
 
-  # Extract HMDB ID (format: HMDB0000001 or HMDB00001)
+  # Extract HMDB ID from synonyms (format: HMDB0000001 or HMDB00001)
   hmdb_hits <- syns[grepl("^HMDB\\d+$", syns, ignore.case = TRUE)]
   hmdb_id   <- if (length(hmdb_hits) > 0) hmdb_hits[1] else NA_character_
+
+  # If not in synonyms, try PubChem xrefs endpoint (more reliable for HMDB cross-refs)
+  if (is.na(hmdb_id)) {
+    xref_url  <- paste0("https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/cid/",
+                        cid, "/xrefs/RegistryID/JSON")
+    xref_resp <- tryCatch(httr::GET(xref_url, httr::timeout(10)), error = function(e) NULL)
+    if (!is.null(xref_resp) && httr::status_code(xref_resp) == 200) {
+      xref_parsed <- tryCatch(
+        jsonlite::fromJSON(httr::content(xref_resp, "text", encoding = "UTF-8")),
+        error = function(e) NULL
+      )
+      if (!is.null(xref_parsed)) {
+        xinfo   <- xref_parsed$InformationList$Information
+        reg_ids <- if (is.data.frame(xinfo)) xinfo$RegistryID[[1]] else xinfo[[1]]$RegistryID
+        if (!is.null(reg_ids)) {
+          hmdb_xref <- reg_ids[grepl("^HMDB\\d+$", reg_ids, ignore.case = TRUE)]
+          if (length(hmdb_xref) > 0) hmdb_id <- hmdb_xref[1]
+        }
+      }
+    }
+    Sys.sleep(0.1)
+  }
 
   # Extract KEGG ID (format: C##### or G#####)
   kegg_hits <- syns[grepl("^[CG]\\d{5}$", syns)]
