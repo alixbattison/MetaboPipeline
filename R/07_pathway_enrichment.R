@@ -61,11 +61,18 @@ run_pathway_enrichment <- function(data_obj, diff_results, config, organ_dir,
   wiki_res <- run_wikipathways_ora(sig_mapped, bg_mapped, config, wiki_dir, data_obj$organ_name)
   all_results$wikipathways <- wiki_res
 
-  # ── HMDB pathway ORA ─────────────────────────────────────────────────────
+  # ── HMDB pathway ORA (ID-based) ───────────────────────────────────────────
   hmdb_dir <- file.path(pe_dir, "hmdb")
   dir.create(hmdb_dir, showWarnings = FALSE)
   hmdb_res <- run_hmdb_ora(sig_mapped, bg_mapped, config, hmdb_dir, data_obj$organ_name)
   all_results$hmdb <- hmdb_res
+
+  # ── KEGG ORA via compound names (name-based, independent of ID mapping) ───
+  name_kegg_dir <- file.path(pe_dir, "kegg_name_based")
+  dir.create(name_kegg_dir, showWarnings = FALSE)
+  name_kegg_res <- run_name_kegg_ora(sig_mapped, bg_mapped, config,
+                                      name_kegg_dir, data_obj$organ_name)
+  all_results$kegg_name <- name_kegg_res
 
   # ── LIPID MAPS enrichment ─────────────────────────────────────────────────
   lm_dir <- file.path(pe_dir, "lipidmaps")
@@ -139,11 +146,16 @@ run_kegg_ora <- function(sig_mapped, bg_mapped, config, out_dir, organ_name) {
     return(NULL)
   }
 
-  res_df <- as.data.frame(res)
+  res_df <- as.data.frame(res) %>%
+    mutate(
+      fold_enrichment = purrr::map2_dbl(GeneRatio, BgRatio,
+        function(gr, br) parse_ratio_str(gr) / parse_ratio_str(br)),
+      Count = as.integer(Count)
+    )
   utils::write.csv(res_df, file.path(out_dir, "kegg_ora_results.csv"), row.names = FALSE)
 
-  p <- plot_enrichment_dotplot(res_df, paste("KEGG —", organ_name), "KEGG")
-  save_plot(p, file.path(out_dir, "kegg_dotplot.pdf"), width = 10, height = 7)
+  p <- plot_enrichment_scatter(res_df, paste("KEGG —", organ_name))
+  save_plot(p, file.path(out_dir, "kegg_scatter.pdf"), width = 10, height = 7)
 
   # KEGG pathway diagrams for top 5
   if (requireNamespace("pathview", quietly = TRUE)) {
@@ -211,10 +223,15 @@ run_reactome_ora <- function(sig_mapped, bg_mapped, config, out_dir, organ_name)
     return(NULL)
   }
 
-  res_df <- as.data.frame(res)
+  res_df <- as.data.frame(res) %>%
+    mutate(
+      fold_enrichment = purrr::map2_dbl(GeneRatio, BgRatio,
+        function(gr, br) parse_ratio_str(gr) / parse_ratio_str(br)),
+      Count = as.integer(Count)
+    )
   utils::write.csv(res_df, file.path(out_dir, "reactome_ora_results.csv"), row.names = FALSE)
-  p <- plot_enrichment_dotplot(res_df, paste("Reactome —", organ_name), "Reactome")
-  save_plot(p, file.path(out_dir, "reactome_dotplot.pdf"), width = 10, height = 7)
+  p <- plot_enrichment_scatter(res_df, paste("Reactome —", organ_name))
+  save_plot(p, file.path(out_dir, "reactome_scatter.pdf"), width = 10, height = 7)
 
   res_df %>% mutate(database = "Reactome")
 }
@@ -275,10 +292,15 @@ run_wikipathways_ora <- function(sig_mapped, bg_mapped, config, out_dir, organ_n
     return(NULL)
   }
 
-  res_df <- as.data.frame(res)
+  res_df <- as.data.frame(res) %>%
+    mutate(
+      fold_enrichment = purrr::map2_dbl(GeneRatio, BgRatio,
+        function(gr, br) parse_ratio_str(gr) / parse_ratio_str(br)),
+      Count = as.integer(Count)
+    )
   utils::write.csv(res_df, file.path(out_dir, "wikipathways_ora_results.csv"), row.names = FALSE)
-  p <- plot_enrichment_dotplot(res_df, paste("WikiPathways —", organ_name), "WikiPathways")
-  save_plot(p, file.path(out_dir, "wikipathways_dotplot.pdf"), width = 10, height = 7)
+  p <- plot_enrichment_scatter(res_df, paste("WikiPathways —", organ_name))
+  save_plot(p, file.path(out_dir, "wikipathways_scatter.pdf"), width = 10, height = 7)
 
   res_df %>% mutate(database = "WikiPathways")
 }
@@ -300,27 +322,32 @@ run_hmdb_ora <- function(sig_mapped, bg_mapped, config, out_dir, organ_name) {
     return(NULL)
   }
 
+  n_sig_total <- length(hmdb_sig)
+  n_bg_total  <- length(hmdb_bg)
+
   # Fisher's exact test per pathway
   res <- purrr::map_dfr(unique(pathways$pathway_name), function(pw) {
     pw_members  <- pathways$hmdb_id[pathways$pathway_name == pw]
     in_sig_in   <- sum(hmdb_sig %in% pw_members)
-    in_sig_out  <- length(hmdb_sig) - in_sig_in
+    in_sig_out  <- n_sig_total - in_sig_in
     out_sig_in  <- sum(hmdb_bg[!hmdb_bg %in% hmdb_sig] %in% pw_members)
-    out_sig_out <- length(hmdb_bg) - length(hmdb_sig) - out_sig_in
+    out_sig_out <- n_bg_total - n_sig_total - out_sig_in
     ct  <- matrix(c(in_sig_in, in_sig_out, out_sig_in, out_sig_out), nrow = 2)
     pval <- tryCatch(fisher.test(ct, alternative = "greater")$p.value,
                      error = function(e) NA_real_)
     tibble(
-      pathway      = pw,
-      n_sig        = in_sig_in,
-      n_pathway    = length(pw_members),
-      p_value      = pval
+      Description     = pw,
+      Count           = in_sig_in,
+      n_pathway       = length(pw_members),
+      p_value         = pval,
+      fold_enrichment = compute_fold_enrichment(in_sig_in, n_sig_total,
+                                                length(pw_members), n_bg_total)
     )
   }) %>%
-    filter(!is.na(p_value), n_sig > 0) %>%
-    mutate(p_adjust = p.adjust(p_value, method = "BH"),
-           GeneRatio = paste0(n_sig, "/", length(hmdb_sig)),
-           BgRatio   = paste0(n_pathway, "/", length(hmdb_bg))) %>%
+    filter(!is.na(p_value), Count > 0) %>%
+    mutate(p_adjust  = p.adjust(p_value, method = "BH"),
+           GeneRatio = paste0(Count, "/", n_sig_total),
+           BgRatio   = paste0(n_pathway, "/", n_bg_total)) %>%
     filter(p_adjust < 0.05) %>%
     arrange(p_adjust)
 
@@ -330,13 +357,10 @@ run_hmdb_ora <- function(sig_mapped, bg_mapped, config, out_dir, organ_name) {
   }
 
   utils::write.csv(res, file.path(out_dir, "hmdb_ora_results.csv"), row.names = FALSE)
-  p <- plot_enrichment_dotplot(
-    res %>% rename(Description = pathway, p.adjust = p_adjust, Count = n_sig),
-    paste("HMDB —", organ_name), "HMDB"
-  )
-  save_plot(p, file.path(out_dir, "hmdb_dotplot.pdf"), width = 10, height = 7)
+  p <- plot_enrichment_scatter(res, paste("HMDB pathways —", organ_name))
+  save_plot(p, file.path(out_dir, "hmdb_scatter.pdf"), width = 10, height = 7)
 
-  res %>% mutate(database = "HMDB")
+  res %>% mutate(database = "HMDB", p.adjust = p_adjust)
 }
 
 fetch_hmdb_pathways <- function(hmdb_ids) {
@@ -430,21 +454,26 @@ run_mummichog <- function(sig_mz_df, bg_mz_df, config, out_dir, organ_name) {
   kegg_pathways <- fetch_kegg_pathways(config$organism_kegg)
   if (is.null(kegg_pathways)) return(NULL)
 
+  n_sig_total <- length(sig_compounds)
+  n_bg_total  <- length(bg_compounds)
+
   res <- purrr::map_dfr(names(kegg_pathways), function(pw_id) {
     pw_members  <- kegg_pathways[[pw_id]]$compounds
     in_sig_in   <- sum(sig_compounds %in% pw_members)
     if (in_sig_in == 0) return(NULL)
-    in_sig_out  <- length(sig_compounds) - in_sig_in
+    in_sig_out  <- n_sig_total - in_sig_in
     out_sig_in  <- sum(bg_compounds[!bg_compounds %in% sig_compounds] %in% pw_members)
-    out_sig_out <- length(bg_compounds) - length(sig_compounds) - out_sig_in
+    out_sig_out <- n_bg_total - n_sig_total - out_sig_in
     ct   <- matrix(c(in_sig_in, in_sig_out, out_sig_in, out_sig_out), nrow = 2)
     pval <- tryCatch(fisher.test(ct, alternative = "greater")$p.value,
                      error = function(e) NA_real_)
-    tibble(pathway_id   = pw_id,
-           pathway_name = kegg_pathways[[pw_id]]$name,
-           n_sig        = in_sig_in,
-           n_pathway    = length(pw_members),
-           p_value      = pval)
+    tibble(Description     = kegg_pathways[[pw_id]]$name,
+           pathway_id      = pw_id,
+           Count           = in_sig_in,
+           n_pathway       = length(pw_members),
+           p_value         = pval,
+           fold_enrichment = compute_fold_enrichment(in_sig_in, n_sig_total,
+                                                     length(pw_members), n_bg_total))
   }) %>%
     filter(!is.na(p_value)) %>%
     mutate(p_adjust = p.adjust(p_value, method = "BH")) %>%
@@ -457,13 +486,106 @@ run_mummichog <- function(sig_mz_df, bg_mz_df, config, out_dir, organ_name) {
   }
 
   utils::write.csv(res, file.path(out_dir, "mummichog_results.csv"), row.names = FALSE)
-  p <- plot_enrichment_dotplot(
-    res %>% rename(Description = pathway_name, p.adjust = p_adjust, Count = n_sig),
-    paste("mummichog (m/z-based) —", organ_name), "mummichog"
-  )
-  save_plot(p, file.path(out_dir, "mummichog_dotplot.pdf"), width = 10, height = 7)
+  p <- plot_enrichment_scatter(res, paste("mummichog (m/z-based) —", organ_name))
+  save_plot(p, file.path(out_dir, "mummichog_scatter.pdf"), width = 10, height = 7)
 
   res %>% mutate(database = "mummichog")
+}
+
+# ── Name-based KEGG ORA ───────────────────────────────────────────────────────
+# Uses compound names (not pre-mapped KEGG IDs) to independently query KEGG.
+# Catches compounds that PubChem found but that lack a KEGG cross-reference.
+
+run_name_kegg_ora <- function(sig_mapped, bg_mapped, config, out_dir, organ_name) {
+  if (!requireNamespace("clusterProfiler", quietly = TRUE)) {
+    log_warn("clusterProfiler not installed — skipping name-based KEGG ORA.")
+    return(NULL)
+  }
+
+  # Compound names: use the mapped name if available, fall back to clean_name
+  name_col <- if ("compound_name" %in% names(sig_mapped)) "compound_name" else "clean_name"
+  sig_names <- sig_mapped %>%
+    filter(!is.na(.data[[name_col]])) %>%
+    pull(.data[[name_col]]) %>%
+    unique()
+  bg_names <- bg_mapped %>%
+    filter(!is.na(.data[[name_col]])) %>%
+    pull(.data[[name_col]]) %>%
+    unique()
+
+  if (length(sig_names) < 1) {
+    log_warn("No compound names for name-based KEGG ORA — skipping.")
+    return(NULL)
+  }
+
+  log_info("  Name-based KEGG ORA: looking up ", length(sig_names),
+           " significant compound names in KEGG")
+
+  # Reuse the KEGG names cache written by the mapping step
+  cache_file <- here::here("data", ".mapping_cache", "kegg_names_cache.rds")
+  kegg_cache <- if (file.exists(cache_file)) {
+    tryCatch(readRDS(cache_file), error = function(e) list())
+  } else list()
+
+  # Look up KEGG compound ID for each name; use cache first, then API
+  lookup_kegg <- function(name) {
+    hit <- kegg_cache[[name]]
+    if (!is.null(hit)) return(hit$kegg_id %||% NA_character_)
+    kid <- tryCatch(kegg_name_search(name), error = function(e) NA_character_)
+    Sys.sleep(0.15)
+    kid
+  }
+
+  sig_kegg <- unique(na.omit(sapply(sig_names, lookup_kegg)))
+  bg_kegg  <- unique(na.omit(sapply(bg_names,  lookup_kegg)))
+
+  if (length(sig_kegg) < 1) {
+    log_warn("  Name-based KEGG: no KEGG IDs resolved from compound names — skipping.")
+    return(NULL)
+  }
+
+  log_info("  Name-based KEGG: ", length(sig_kegg), " significant / ",
+           length(bg_kegg), " background KEGG compound IDs resolved")
+
+  res <- tryCatch(
+    clusterProfiler::enrichKEGG(
+      gene          = sig_kegg,
+      universe      = if (length(bg_kegg) > 0) bg_kegg else NULL,
+      organism      = config$organism_kegg,
+      pAdjustMethod = "BH",
+      pvalueCutoff  = 0.05,
+      minGSSize     = config$min_pathway_size,
+      maxGSSize     = config$max_pathway_size
+    ),
+    error = function(e) {
+      log_warn("Name-based KEGG ORA failed: ", e$message)
+      NULL
+    }
+  )
+
+  if (is.null(res) || nrow(as.data.frame(res)) == 0) {
+    log_info("  Name-based KEGG: no enriched pathways found.")
+    return(NULL)
+  }
+
+  res_df <- as.data.frame(res) %>%
+    mutate(
+      fold_enrichment = purrr::map2_dbl(GeneRatio, BgRatio,
+        function(gr, br) parse_ratio_str(gr) / parse_ratio_str(br)),
+      Count = as.integer(Count)
+    )
+
+  utils::write.csv(res_df,
+                   file.path(out_dir, "kegg_name_based_ora_results.csv"),
+                   row.names = FALSE)
+
+  p <- plot_enrichment_scatter(res_df,
+         paste("KEGG (name-based) —", organ_name))
+  if (!is.null(p))
+    save_plot(p, file.path(out_dir, "kegg_name_based_scatter.pdf"),
+              width = 10, height = 7)
+
+  res_df %>% mutate(database = "KEGG_name")
 }
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -517,36 +639,68 @@ fetch_kegg_pathways <- function(organism) {
   })
 }
 
-# ── Dot plot ──────────────────────────────────────────────────────────────────
+# ── Fold enrichment helper ────────────────────────────────────────────────────
 
-plot_enrichment_dotplot <- function(res_df, title, db_name, top_n = 20) {
-  if (!"Description" %in% names(res_df)) return(NULL)
-  if (!"p.adjust" %in% names(res_df))   return(NULL)
-  if (!"Count" %in% names(res_df) && "n_sig" %in% names(res_df)) {
+compute_fold_enrichment <- function(n_sig_in, n_sig_total, n_bg_in, n_bg_total) {
+  expected <- n_bg_in / n_bg_total
+  observed <- n_sig_in / n_sig_total
+  ifelse(expected > 0, observed / expected, NA_real_)
+}
+
+parse_ratio_str <- function(ratio_str) {
+  parts <- strsplit(as.character(ratio_str), "/")[[1]]
+  as.numeric(parts[1]) / as.numeric(parts[2])
+}
+
+# ── Enrichment scatter plot (fold enrichment x, -log10 p y) ──────────────────
+# Used for all pathway ORA results.
+
+plot_enrichment_scatter <- function(res_df, title, top_n = 25) {
+  needed <- c("Description", "fold_enrichment", "p_adjust", "Count")
+  # Accept p.adjust as alias
+  if (!"p_adjust" %in% names(res_df) && "p.adjust" %in% names(res_df))
+    res_df$p_adjust <- res_df$p.adjust
+  if (!"Count" %in% names(res_df) && "n_sig" %in% names(res_df))
     res_df$Count <- res_df$n_sig
-  }
-  if (!"Count" %in% names(res_df)) return(NULL)
+  if (!all(needed %in% names(res_df))) return(NULL)
 
   plot_df <- res_df %>%
-    arrange(p.adjust) %>%
+    filter(!is.na(fold_enrichment), !is.na(p_adjust), p_adjust > 0) %>%
+    arrange(p_adjust) %>%
     slice_head(n = top_n) %>%
     mutate(
-      Description  = stringr::str_wrap(Description, 40),
-      Description  = factor(Description, levels = rev(Description)),
-      neg_log10_fdr = -log10(p.adjust)
+      neg_log10_p = -log10(p_adjust),
+      label       = stringr::str_trunc(Description, 45)
     )
 
-  ggplot(plot_df, aes(x = neg_log10_fdr, y = Description, size = Count,
-                      colour = neg_log10_fdr)) +
-    geom_point() +
+  if (nrow(plot_df) == 0) return(NULL)
+
+  p <- ggplot(plot_df, aes(x = fold_enrichment, y = neg_log10_p,
+                            size = Count, colour = neg_log10_p)) +
+    geom_point(alpha = 0.85) +
+    geom_hline(yintercept = -log10(0.05), linetype = "dashed",
+               colour = "grey55", linewidth = 0.4) +
     scale_colour_gradient(low = "#fee08b", high = "#d73027",
                           name = expression(-log[10](FDR))) +
-    scale_size_continuous(name = "Feature count", range = c(2, 8)) +
+    scale_size_continuous(name = "Features\nin pathway", range = c(2, 9)) +
     labs(title = title,
-         x     = expression(-log[10](adjusted~p-value)),
-         y     = NULL) +
-    theme_metabo() +
-    theme(axis.text.y = element_text(size = 8))
+         x     = "Fold enrichment",
+         y     = expression(-log[10](adjusted~p-value))) +
+    theme_metabo()
+
+  if (requireNamespace("ggrepel", quietly = TRUE)) {
+    p <- p + ggrepel::geom_text_repel(
+      aes(label = label),
+      size         = 2.5,
+      colour       = "black",
+      max.overlaps = 20,
+      box.padding  = 0.3
+    )
+  } else {
+    p <- p + geom_text(aes(label = label), size = 2.5, colour = "black",
+                       vjust = -0.8)
+  }
+  p
 }
 
 # ── Cross-database summary ────────────────────────────────────────────────────
@@ -714,23 +868,33 @@ lipidmaps_ora <- function(sig_classes, bg_classes, level_name,
 
 plot_lipidmaps <- function(res, title) {
   plot_df <- res %>%
+    filter(!is.na(fdr), fdr > 0) %>%
     mutate(
-      category     = stringr::str_wrap(category, 35),
-      category     = factor(category, levels = rev(category)),
-      neg_log10_fdr = -log10(fdr)
+      fold_enrichment = n_sig / n_bg,   # relative enrichment within lipid space
+      neg_log10_p     = -log10(fdr),
+      label           = stringr::str_trunc(category, 40)
     )
 
-  ggplot(plot_df, aes(x = neg_log10_fdr, y = category,
-                      size = n_sig, colour = neg_log10_fdr)) +
-    geom_point() +
+  p <- ggplot(plot_df, aes(x = fold_enrichment, y = neg_log10_p,
+                            size = n_sig, colour = neg_log10_p)) +
+    geom_point(alpha = 0.85) +
+    geom_hline(yintercept = -log10(0.05), linetype = "dashed",
+               colour = "grey55", linewidth = 0.4) +
     scale_colour_gradient(low = "#fee08b", high = "#d73027",
                           name = expression(-log[10](FDR))) +
     scale_size_continuous(name = "Significant\nfeatures", range = c(3, 9)) +
     labs(title = title,
-         x     = expression(-log[10](adjusted~p-value)),
-         y     = NULL) +
-    theme_metabo() +
-    theme(axis.text.y = element_text(size = 9))
+         x     = "Fold enrichment (sig/bg ratio)",
+         y     = expression(-log[10](adjusted~p-value))) +
+    theme_metabo()
+
+  if (requireNamespace("ggrepel", quietly = TRUE)) {
+    p <- p + ggrepel::geom_text_repel(aes(label = label), size = 2.8,
+                                       colour = "black", max.overlaps = 15)
+  } else {
+    p <- p + geom_text(aes(label = label), size = 2.8, colour = "black", vjust = -0.8)
+  }
+  p
 }
 
 plot_lipid_composition <- function(sig_lm, bg_lm, organ_name) {
