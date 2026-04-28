@@ -14,8 +14,9 @@ run_pathway_enrichment <- function(data_obj, diff_results, config, organ_dir,
   dir.create(pe_dir, recursive = TRUE, showWarnings = FALSE)
 
   # Gather all significantly differential features (Class A + B)
+  # Use adj_p threshold only — consistent with heatmap and volcano plot colouring.
   sig_class_a <- purrr::map_dfr(diff_results$pairwise, function(df) {
-    df %>% filter(significant) %>%
+    df %>% filter(adj_p < config$fdr_threshold) %>%
       select(feature, log2FC, adj_p, group1, group2, direction)
   }) %>% distinct(feature, .keep_all = TRUE)
 
@@ -32,14 +33,16 @@ run_pathway_enrichment <- function(data_obj, diff_results, config, organ_dir,
     return(invisible(NULL))
   }
 
-  # Resolve KEGG / HMDB IDs from mapping table
+  # Resolve KEGG / HMDB IDs from mapping table.
+  # sig_mapped: high/medium confidence only (has HMDB or KEGG ID).
+  # bg_mapped:  include low confidence too so name-based ORA has a full background.
   sig_mapped <- mapping_tbl %>%
     filter(feature %in% sig_features,
            confidence %in% c("high", "medium"))
 
   bg_mapped <- mapping_tbl %>%
     filter(feature %in% background,
-           confidence %in% c("high", "medium"))
+           confidence %in% c("high", "medium", "low"))
 
   all_results <- list()
 
