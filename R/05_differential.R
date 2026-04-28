@@ -5,7 +5,7 @@ suppressPackageStartupMessages({
   library(ggplot2)
   library(ggrepel)
   library(limma)
-})
+}) 
 
 # ── Main differential analysis entry point ───────────────────────────────────
 
