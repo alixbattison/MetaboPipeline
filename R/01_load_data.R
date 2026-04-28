@@ -11,8 +11,14 @@ suppressPackageStartupMessages({
 load_metabolomics_data <- function(file_path, config) {
   log_info("Loading: ", basename(file_path))
 
+  # Peek at column count so we can force the Name column to text.
+  # readxl infers mixed (numeric + string) Name columns as numeric and
+  # silently coerces compound name strings to NA.
+  n_cols    <- ncol(readxl::read_excel(file_path, sheet = 1, n_max = 0))
+  col_types <- c("text", rep("guess", n_cols - 1))
+
   raw <- tryCatch(
-    readxl::read_excel(file_path, sheet = 1),
+    readxl::read_excel(file_path, sheet = 1, col_types = col_types),
     error = function(e) stop("Cannot read '", basename(file_path), "': ", e$message)
   )
 
